@@ -618,14 +618,21 @@ class StartupViewModel : ViewModel() {
             else -> rawCost
         }
 
-        // On ne touche jamais à remainingAmount ici : c'est le solde évolutif
+        // On ne réinitialise jamais remainingAmount ici : c'est le solde évolutif
         // (alimenté par les paiements/virements/dépenses), pas le montant de
-        // départ. Le réinitialiser à chaque édition effacerait la progression.
+        // départ. Mais si l'utilisateur corrige explicitement baseAmount, on
+        // répercute la différence sur remainingAmount, sinon l'édition n'a
+        // aucun effet visible sur le montant affiché.
+        val oldLine = _budgetLines.value.find { it.id == lineId }
+        val delta = (baseAmount - (oldLine?.baseAmount ?: baseAmount)).roundToCents()
+        val newRemaining = ((oldLine?.remainingAmount ?: baseAmount) + delta).roundToCents()
+
         val updates = mapOf(
             "title" to title,
             "periodicity" to periodicity,
             "monthlyCost" to monthlyCost,
             "baseAmount" to baseAmount,
+            "remainingAmount" to newRemaining,
             "payer" to payer,
             "type" to type   // ← nouveau
         )
