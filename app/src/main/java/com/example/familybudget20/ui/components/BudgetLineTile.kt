@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -24,6 +25,8 @@ fun BudgetLineTile(
     viewModel: StartupViewModel,
     onEdit: (BudgetLine) -> Unit
 ) {
+    val activeMode = viewModel.activeMode.collectAsState().value
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -62,13 +65,17 @@ fun BudgetLineTile(
                 fontSize = 14.sp
             )
 
-            Text(
-                text = "Payé par : ${viewModel.getPayerName(line.payer)}",
-                color = Color.Gray,
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis  // ← affiche "Payé par : Tipha..." proprement
-            )
+            // Le champ "payer" n'existe pas côté solo (toujours "both" par défaut,
+            // non éditable) : pas la peine de l'afficher.
+            if (activeMode != "solo") {
+                Text(
+                    text = "Payé par : ${viewModel.getPayerName(line.payer)}",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis  // ← affiche "Payé par : Tipha..." proprement
+                )
+            }
         }
 
         // Icône d’édition

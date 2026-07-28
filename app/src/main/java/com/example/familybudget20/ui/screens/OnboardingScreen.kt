@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,7 +22,7 @@ import com.example.familybudget20.viewmodel.StartupViewModel
 import kotlinx.coroutines.launch
 
 @Composable
-fun OnboardingScreen(viewModel: StartupViewModel) {
+fun OnboardingScreen(viewModel: StartupViewModel, onCancel: (() -> Unit)? = null) {
 
     var name by remember { mutableStateOf("") }
     var color by remember { mutableStateOf("#2196F3") }
@@ -36,10 +38,14 @@ fun OnboardingScreen(viewModel: StartupViewModel) {
     var isLinkingGoogle by remember { mutableStateOf(false) }
     var googleError by remember { mutableStateOf<String?>(null) }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF121212))
+    ) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -214,6 +220,19 @@ fun OnboardingScreen(viewModel: StartupViewModel) {
                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
             } else {
                 Text(if (isJoining) "Rejoindre la famille" else "Créer ma famille", color = Color.White)
+            }
+        }
+    }
+
+        if (onCancel != null) {
+            IconButton(
+                onClick = onCancel,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Annuler", tint = Color.White)
             }
         }
     }

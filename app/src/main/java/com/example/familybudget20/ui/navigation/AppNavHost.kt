@@ -23,6 +23,7 @@ fun AppNavHost(startupViewModel: StartupViewModel) {
     var showSettings by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf("home") }
     val activeMode by startupViewModel.activeMode.collectAsState()
+    val userProfile by startupViewModel.userProfile.collectAsState()
 
     // Popup changelog
     val context = LocalContext.current
@@ -43,14 +44,14 @@ fun AppNavHost(startupViewModel: StartupViewModel) {
         AlertDialog(
             onDismissRequest = { showChangelog = false },
             containerColor = Color(0xFF1A1D24),
-            title = { Text("✨ Nouveautés v0.1", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = { Text("✨ Nouveautés v0.2", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("• Connexion avec Google (récupère tes données si tu changes de téléphone)", color = Color.Gray)
-                    Text("• Solo : cocher une charge récurrente débite le compte courant", color = Color.Gray)
-                    Text("• Solo : suppression de l'onglet Investissement", color = Color.Gray)
-                    Text("• Solo : menu développeur (reset) enfin fonctionnel", color = Color.Gray)
-                    Text("• Solo : tuile d'accueil corrigée pour n'afficher que le compte courant", color = Color.Gray)
+                    Text("• L'appli peut enfin se lancer en solo uniquement, sans passer par la création d'une famille", color = Color.Gray)
+                    Text("• Solo : nouvel historique mensuel (factures payées, gain d'épargne, dépenses du mois)", color = Color.Gray)
+                    Text("• Solo : le mois peut suivre tes propres dates (ex: paie le 17) plutôt que le mois calendaire", color = Color.Gray)
+                    Text("• Solo : le solde du compte ne reste plus bloqué après une réinitialisation", color = Color.Gray)
+                    Text("• Divers correctifs de stabilité et d'affichage en mode solo", color = Color.Gray)
                 }
             },
             confirmButton = {
@@ -72,7 +73,12 @@ fun AppNavHost(startupViewModel: StartupViewModel) {
         )
 
         is StartupViewModel.StartupState.Onboarding -> OnboardingScreen(
-            viewModel = startupViewModel
+            viewModel = startupViewModel,
+            // On ne propose "Annuler" que si on arrive ici avec un profil déjà
+            // existant (ex: utilisateur solo qui a cliqué sur "Famille").
+            onCancel = if (userProfile != null) {
+                { startupViewModel.cancelOnboarding() }
+            } else null
         )
         is StartupViewModel.StartupState.SoloOnboarding -> SoloOnboardingScreen(
             viewModel = startupViewModel
@@ -133,12 +139,21 @@ fun AppNavHost(startupViewModel: StartupViewModel) {
                             .padding(innerPadding)
                     )
 
-                    "history" -> HistoryScreen(
-                        viewModel = startupViewModel,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                    )
+                    "history" -> if (activeMode == "solo") {
+                        SoloHistoryScreen(
+                            viewModel = startupViewModel,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        )
+                    } else {
+                        HistoryScreen(
+                            viewModel = startupViewModel,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        )
+                    }
 
                     "expenses" -> if (activeMode == "solo") {
                         AccountScreen(

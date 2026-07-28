@@ -118,13 +118,21 @@ class StartupViewModel : ViewModel() {
                 if (snapshot != null && snapshot.exists()) {
                     val profile = snapshot.toObject(UserProfile::class.java)
                     _userProfile.value = profile
-                    if (profile?.familyId != null) {
-                        loadFamily(profile.familyId)
-                    } else {
-                        _startupState.value = StartupState.Onboarding
+                    when {
+                        profile?.mode == "solo" -> {
+                            _activeMode.value = "solo"
+                            loadSoloData(uid)
+                        }
+                        profile?.familyId?.isNotEmpty() == true -> {
+                            _activeMode.value = "family"
+                            loadFamily(profile.familyId)
+                        }
+                        else -> _startupState.value = StartupState.Onboarding
                     }
                 } else {
-                    _startupState.value = StartupState.Onboarding
+                    // Aucun profil : premier lancement de l'appli, l'utilisateur
+                    // doit choisir entre mode famille et mode solo.
+                    _startupState.value = StartupState.Welcome
                 }
             }
     }
@@ -424,31 +432,164 @@ class StartupViewModel : ViewModel() {
         soloRef.get().addOnSuccessListener { soloDoc ->
             val currentMonth = soloDoc.getString("currentMonth")
                 ?: SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
+            // Si absent (anciens comptes créés avant ce champ), on part du début des temps
+            // pour ne pas faire disparaître des dépenses déjà existantes lors du 1er archivage.
+            val periodStart = soloDoc.getTimestamp("currentMonthStartedAt")
 
-            soloRef.collection("lines")
-                .whereEqualTo("type", "current")
-                .get()
-                .addOnSuccessListener { snapshot ->
-                    val batch = firestore.batch()
+            archiveSoloMonth(uid, currentMonth, periodStart) {
+                soloRef.collection("lines")
+                    .whereEqualTo("type", "current")
+                    .get()
+                    .addOnSuccessListener { snapshot ->
+                        val batch = firestore.batch()
 
-                    // Reset paidThisMonth sur toutes les lignes récurrentes. La transaction
-                    // du mois précédent reste dans l'historique (vraie dépense passée) :
-                    // on efface juste la référence, la coche du nouveau mois repart de zéro.
-                    snapshot.documents.forEach { doc ->
-                        batch.update(doc.reference, "paidThisMonth", false, "paidTransactionId", null)
+                        // Reset paidThisMonth sur toutes les lignes récurrentes. La transaction
+                        // du mois précédent reste dans l'historique (vraie dépense passée) :
+                        // on efface juste la référence, la coche du nouveau mois repart de zéro.
+                        snapshot.documents.forEach { doc ->
+                            batch.update(doc.reference, "paidThisMonth", false, "paidTransactionId", null)
+                        }
+
+                        // Reset savingPaidThisMonth sur le profil utilisateur
+                        val userRef = firestore.collection("users").document(uid)
+                        batch.update(userRef, "savingPaidThisMonth", false)
+
+                        // Update du mois courant, à partir du mois stocké (pas de la date réelle)
+                        val newMonth = computeNextMonth(currentMonth)
+                        batch.update(soloRef, "currentMonth", newMonth, "currentMonthStartedAt", Timestamp.now())
+
+                        batch.commit()
                     }
-
-                    // Reset savingPaidThisMonth sur le profil utilisateur
-                    val userRef = firestore.collection("users").document(uid)
-                    batch.update(userRef, "savingPaidThisMonth", false)
-
-                    // Update du mois courant, à partir du mois stocké (pas de la date réelle)
-                    val newMonth = computeNextMonth(currentMonth)
-                    batch.update(soloRef, "currentMonth", newMonth)
-
-                    batch.commit()
-                }
+            }
         }
+    }
+
+    //----------------------------------------
+    // SOLO : Historique mensuel
+    //----------------------------------------
+    private val _soloHistoryMonths = MutableStateFlow<List<String>>(emptyList())
+    val soloHistoryMonths: StateFlow<List<String>> = _soloHistoryMonths
+
+    // Factures récurrentes payées ce mois-là : titre → montant
+    private val _soloHistoryBills = MutableStateFlow<List<Pair<String, Double>>>(emptyList())
+    val soloHistoryBills: StateFlow<List<Pair<String, Double>>> = _soloHistoryBills
+
+    // Gain d'épargne du mois par ligne (pas le total cumulé) : titre → montant
+    private val _soloHistorySavings = MutableStateFlow<List<Pair<String, Double>>>(emptyList())
+    val soloHistorySavings: StateFlow<List<Pair<String, Double>>> = _soloHistorySavings
+
+    // Somme des dépenses ponctuelles (hors factures récurrentes) du mois
+    private val _soloHistoryExpensesTotal = MutableStateFlow(0.0)
+    val soloHistoryExpensesTotal: StateFlow<Double> = _soloHistoryExpensesTotal
+
+    // Archive un instantané du mois avant sa réinitialisation : factures cochées,
+    // gain d'épargne (si validé), et total des dépenses ponctuelles (hors 🔁 factures,
+    // déjà représentées par les tuiles factures). S'appuie sur les données déjà
+    // chargées en mémoire (_budgetLines, _transactions) plutôt que sur une requête
+    // Firestore dédiée.
+    //
+    // Les dépenses sont sélectionnées par une vraie frontière temporelle
+    // (periodStart = date du dernier "Nouveau mois"), pas en comparant à la
+    // chaîne "currentMonth" : celle-ci n'avance qu'au clic et peut décrocher
+    // de la date réelle (ex: plusieurs "Nouveau mois" le même jour en test),
+    // ce qui ferait rater les dépenses ajoutées entre-temps.
+    private fun archiveSoloMonth(uid: String, oldMonth: String, periodStart: Timestamp?, onComplete: () -> Unit) {
+        val soloRef = firestore.collection("users").document(uid).collection("solo").document("data")
+        val historyRef = soloRef.collection("history").document("index")
+
+        val startMillis = periodStart?.toDate()?.time ?: 0L
+        val expensesTotal = _transactions.value
+            .filter {
+                it.lineId == "account" && it.type == "depense" &&
+                    (it.createdAt?.toDate()?.time ?: 0L) >= startMillis
+            }
+            .sumOf { it.amount }
+            .roundToCents()
+
+        val paidBills = _budgetLines.value.filter { it.type == "current" && it.paidThisMonth }
+        val savingsGained = if (userProfile.value?.savingPaidThisMonth == true) {
+            _budgetLines.value.filter { it.type == "saving" }
+        } else emptyList()
+
+        val batch = firestore.batch()
+        batch.set(
+            historyRef,
+            mapOf("months" to com.google.firebase.firestore.FieldValue.arrayUnion(oldMonth)),
+            com.google.firebase.firestore.SetOptions.merge()
+        )
+        batch.set(
+            historyRef.collection(oldMonth).document("meta"),
+            mapOf("expensesTotal" to expensesTotal, "archivedAt" to Timestamp.now())
+        )
+        paidBills.forEach { line ->
+            batch.set(
+                historyRef.collection(oldMonth).document("bills").collection("items").document(line.id),
+                mapOf("title" to line.title, "amount" to line.monthlyCost)
+            )
+        }
+        savingsGained.forEach { line ->
+            batch.set(
+                historyRef.collection(oldMonth).document("savings").collection("items").document(line.id),
+                mapOf("title" to line.title, "amount" to line.monthlyCost)
+            )
+        }
+        batch.commit()
+            .addOnSuccessListener { onComplete() }
+            .addOnFailureListener { e ->
+                android.util.Log.e("ArchiveSolo", "Erreur archivage mois $oldMonth", e)
+                onComplete()
+            }
+    }
+
+    fun loadSoloHistoryMonths() {
+        val uid = auth.currentUser?.uid ?: return
+        historyMonthsListener?.remove()
+        historyMonthsListener = firestore.collection("users")
+            .document(uid)
+            .collection("solo")
+            .document("data")
+            .collection("history")
+            .document("index")
+            .addSnapshotListener { snapshot, _ ->
+                _soloHistoryMonths.value = if (snapshot != null && snapshot.exists()) {
+                    val months = (snapshot.get("months") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                    months.sortedDescending().take(24)
+                } else emptyList()
+            }
+    }
+
+    fun loadSoloHistoryDetails(month: String) {
+        val uid = auth.currentUser?.uid ?: return
+        val monthRef = firestore.collection("users")
+            .document(uid)
+            .collection("solo")
+            .document("data")
+            .collection("history")
+            .document("index")
+            .collection(month)
+
+        monthRef.document("bills").collection("items").get()
+            .addOnSuccessListener { snapshot ->
+                _soloHistoryBills.value = snapshot.documents.mapNotNull { doc ->
+                    val title = doc.getString("title") ?: return@mapNotNull null
+                    val amount = doc.getDouble("amount") ?: return@mapNotNull null
+                    title to amount
+                }
+            }
+
+        monthRef.document("savings").collection("items").get()
+            .addOnSuccessListener { snapshot ->
+                _soloHistorySavings.value = snapshot.documents.mapNotNull { doc ->
+                    val title = doc.getString("title") ?: return@mapNotNull null
+                    val amount = doc.getDouble("amount") ?: return@mapNotNull null
+                    title to amount
+                }
+            }
+
+        monthRef.document("meta").get()
+            .addOnSuccessListener { doc ->
+                _soloHistoryExpensesTotal.value = doc.getDouble("expensesTotal") ?: 0.0
+            }
     }
 
     fun updateBudgetLine(
@@ -517,7 +658,9 @@ class StartupViewModel : ViewModel() {
     }
 
     fun loadHistoryMonths() {
-        val familyId = userProfile.value?.familyId ?: return
+        // familyId vaut "" (pas null) en mode solo : il faut l'exclure explicitement,
+        // sinon Firestore reçoit une référence de document vide et plante.
+        val familyId = userProfile.value?.familyId?.takeIf { it.isNotEmpty() } ?: return
         historyMonthsListener?.remove()
         historyMonthsListener = firestore.collection("families")
             .document(familyId)
@@ -533,7 +676,7 @@ class StartupViewModel : ViewModel() {
     }
 
     fun loadHistoryLines(month: String) {
-        val familyId = userProfile.value?.familyId ?: return
+        val familyId = userProfile.value?.familyId?.takeIf { it.isNotEmpty() } ?: return
         firestore.collection("families")
             .document(familyId)
             .collection("budgets")
@@ -692,6 +835,52 @@ class StartupViewModel : ViewModel() {
             }
     }
 
+    fun resetSoloHistory() {
+        val uid = auth.currentUser?.uid ?: return
+        val historyRef = firestore.collection("users").document(uid)
+            .collection("solo").document("data")
+            .collection("history").document("index")
+
+        historyRef.get().addOnSuccessListener { doc ->
+            val months = (doc.get("months") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+            val batch = firestore.batch()
+            batch.delete(historyRef)
+            batch.commit()
+                .addOnSuccessListener {
+                    months.forEach { month ->
+                        val monthRef = historyRef.collection(month)
+                        monthRef.document("bills").collection("items")
+                            .get().addOnSuccessListener { itemsSnapshot ->
+                                val innerBatch = firestore.batch()
+                                itemsSnapshot.documents.forEach { innerBatch.delete(it.reference) }
+                                innerBatch.delete(monthRef.document("bills"))
+                                innerBatch.commit()
+                                    .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur suppression factures mois $month", e) }
+                            }
+                            .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur lecture factures mois $month", e) }
+
+                        monthRef.document("savings").collection("items")
+                            .get().addOnSuccessListener { itemsSnapshot ->
+                                val innerBatch = firestore.batch()
+                                itemsSnapshot.documents.forEach { innerBatch.delete(it.reference) }
+                                innerBatch.delete(monthRef.document("savings"))
+                                innerBatch.commit()
+                                    .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur suppression épargne mois $month", e) }
+                            }
+                            .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur lecture épargne mois $month", e) }
+
+                        monthRef.document("meta").delete()
+                            .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur suppression meta mois $month", e) }
+                    }
+                    _soloHistoryMonths.value = emptyList()
+                    _soloHistoryBills.value = emptyList()
+                    _soloHistorySavings.value = emptyList()
+                    _soloHistoryExpensesTotal.value = 0.0
+                }
+                .addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur suppression doc history", e) }
+        }.addOnFailureListener { e -> android.util.Log.e("ResetSoloHistory", "Erreur lecture history", e) }
+    }
+
     fun resetSoloDB() {
         val uid = auth.currentUser?.uid ?: return
         val soloRef = firestore.collection("users").document(uid).collection("solo").document("data")
@@ -724,6 +913,8 @@ class StartupViewModel : ViewModel() {
                     .addOnFailureListener { e -> android.util.Log.e("ResetSoloDB", "Erreur suppression balanceSnapshots", e) }
             }
             .addOnFailureListener { e -> android.util.Log.e("ResetSoloDB", "Erreur lecture balanceSnapshots", e) }
+
+        resetSoloHistory()
 
         firestore.collection("users").document(uid).delete()
             .addOnFailureListener { e -> android.util.Log.e("ResetSoloDB", "Erreur suppression profil", e) }
@@ -829,6 +1020,10 @@ class StartupViewModel : ViewModel() {
     fun goToOnboarding() { _startupState.value = StartupState.Onboarding }
     fun goToWelcome() { _startupState.value = StartupState.Welcome }
 
+    // Retour à l'accueil depuis l'onboarding famille sans perdre les listeners
+    // déjà actifs (cas : utilisateur solo qui a cliqué sur "Famille" par erreur).
+    fun cancelOnboarding() { _startupState.value = StartupState.Home }
+
     //----------------------------------------
     // Graphique homescreen
     //----------------------------------------
@@ -909,7 +1104,8 @@ class StartupViewModel : ViewModel() {
             if (!doc.exists()) {
                 soloRef.set(mapOf(
                     "createdAt" to Timestamp.now(),
-                    "currentMonth" to SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
+                    "currentMonth" to SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date()),
+                    "currentMonthStartedAt" to Timestamp.now()
                 ))
                 soloRef.collection("payments").document("status")
                     .set(mapOf("creatorPaid" to false, "partnerPaid" to false))
@@ -1154,6 +1350,10 @@ class StartupViewModel : ViewModel() {
             .addSnapshotListener { snapshot, _ ->
                 if (snapshot != null && snapshot.exists()) {
                     _soloAccountBalance.value = snapshot.getDouble("balance") ?: 0.0
+                } else {
+                    // Le document balance a été supprimé (reset manuel, purge partielle...) :
+                    // on ne doit pas garder l'ancienne valeur en mémoire.
+                    _soloAccountBalance.value = 0.0
                 }
             }
         modeListeners.add(reg)
@@ -1234,7 +1434,8 @@ class StartupViewModel : ViewModel() {
 
         soloRef.set(mapOf(
             "createdAt" to Timestamp.now(),
-            "currentMonth" to SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
+            "currentMonth" to SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date()),
+            "currentMonthStartedAt" to Timestamp.now()
         ))
 
         soloRef.collection("account").document("balance")

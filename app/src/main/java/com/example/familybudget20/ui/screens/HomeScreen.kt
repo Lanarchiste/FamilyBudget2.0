@@ -56,7 +56,6 @@ fun HomeScreen(
     var pendingPayment by remember { mutableStateOf<Boolean?>(null) }
     var homeClickCount by remember { mutableStateOf(0) }
     var showDevMenu by remember { mutableStateOf(false) }
-    var showFamilyWarning by remember { mutableStateOf(false) }
     var shortcuts by remember { mutableStateOf<List<BudgetLine?>>(listOf(null, null, null)) }
     var showShortcutPicker by remember { mutableStateOf<Int?>(null) }
 
@@ -101,24 +100,6 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingPayment = null }) { Text("Pas encore", color = Color.Gray) }
-            }
-        )
-    }
-
-    if (showFamilyWarning) {
-        AlertDialog(
-            onDismissRequest = { showFamilyWarning = false },
-            containerColor = Color(0xFF1A1D24),
-            title = { Text("Rejoindre une famille ?", color = Color.White) },
-            text = { Text("Tu es en mode solo. Veux-tu créer ou rejoindre une famille ?", color = Color.Gray) },
-            confirmButton = {
-                Button(
-                    onClick = { showFamilyWarning = false; viewModel.goToOnboarding() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
-                ) { Text("Oui, continuer", color = Color.White) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showFamilyWarning = false }) { Text("Annuler", color = Color.Gray) }
             }
         )
     }
@@ -180,15 +161,20 @@ fun HomeScreen(
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeMode == "family") Color(0xFF2196F3) else Color.Transparent)
                         .clickable {
-                            if (activeMode != "family") {
-                                if (!hasFamilyId) showFamilyWarning = true
-                                else viewModel.switchMode("family")
+                            if (!hasFamilyId) {
+                                viewModel.goToOnboarding()
+                            } else if (activeMode != "family") {
+                                viewModel.switchMode("family")
                             }
                         }
                         .padding(horizontal = 14.dp, vertical = 6.dp)
                 ) {
-                    Text("👨‍👩‍👧 Famille", color = Color.White, fontSize = 12.sp,
-                        fontWeight = if (activeMode == "family") FontWeight.Bold else FontWeight.Normal)
+                    Text(
+                        "👨‍👩‍👧 Famille",
+                        color = if (!hasFamilyId) Color(0xFF555555) else Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = if (activeMode == "family") FontWeight.Bold else FontWeight.Normal
+                    )
                 }
                 Box(
                     modifier = Modifier
@@ -600,11 +586,10 @@ fun DevMenuDialog(viewModel: StartupViewModel, onDismiss: () -> Unit) {
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E3A5F))
                 ) { Text("🗂 Reset lignes budgétaires", color = Color.White) }
                 Button(
-                    onClick = { viewModel.resetHistory() },
-                    enabled = !isSolo,
+                    onClick = { if (isSolo) viewModel.resetSoloHistory() else viewModel.resetHistory() },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E3A5F))
-                ) { Text(if (isSolo) "📅 Reset historique (bientôt, solo)" else "📅 Reset historique mensuel", color = Color.White) }
+                ) { Text("📅 Reset historique mensuel", color = Color.White) }
                 Button(
                     onClick = { if (isSolo) viewModel.resetSoloTransactions() else viewModel.resetTransactions() },
                     modifier = Modifier.fillMaxWidth(),

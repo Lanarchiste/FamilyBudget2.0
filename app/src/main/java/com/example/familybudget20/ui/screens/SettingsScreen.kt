@@ -1,5 +1,7 @@
 package com.example.familybudget20.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +56,13 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var googleLinkError by remember { mutableStateOf<String?>(null) }
     var isLinkingGoogle by remember { mutableStateOf(false) }
+
+    val installedVersion = remember {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var latestRelease by remember { mutableStateOf<LatestRelease?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
 
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true // ← ouvre directement en grand
@@ -164,6 +173,48 @@ fun SettingsScreen(
                         "Connecté avec Google : ${linkedEmail ?: "—"}",
                         color = Color.Gray
                     )
+                }
+
+                // --- MISE À JOUR ---
+                Text(
+                    "Version installée : v$installedVersion",
+                    color = Color.Gray,
+                    fontSize = 13.sp
+                )
+                Button(
+                    onClick = {
+                        val release = latestRelease
+                        if (release != null) {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.downloadUrl)))
+                        } else {
+                            updateError = null
+                            isCheckingUpdate = true
+                            scope.launch {
+                                try {
+                                    latestRelease = fetchLatestRelease()
+                                } catch (e: Exception) {
+                                    updateError = e.message ?: "Impossible de vérifier les mises à jour"
+                                } finally {
+                                    isCheckingUpdate = false
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isCheckingUpdate,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A))
+                ) {
+                    Text(
+                        when {
+                            isCheckingUpdate -> "Vérification..."
+                            latestRelease != null -> "⬇️ Télécharger ${latestRelease!!.fileName}"
+                            else -> "Vérifier les mises à jour"
+                        },
+                        color = Color.White
+                    )
+                }
+                if (updateError != null) {
+                    Text(updateError!!, color = Color.Red, fontSize = 12.sp)
                 }
             }
 
