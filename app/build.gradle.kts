@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.familybudget20"
         minSdk = 28
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.21"
+        versionCode = 6
+        versionName = "0.22"
 
         vectorDrawables {
             useSupportLibrary = true
