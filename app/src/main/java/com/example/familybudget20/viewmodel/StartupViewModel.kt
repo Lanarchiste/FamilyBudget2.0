@@ -1300,6 +1300,48 @@ class StartupViewModel : ViewModel() {
 
         batch.commit()
     }
+
+    // SOLO : Virement libre entre une ligne d'épargne et le compte courant
+    fun transferSoloSaving(lineId: String, amount: Double, direction: String) {
+        // direction: "verser" (compte courant → épargne) | "retirer" (épargne → compte courant)
+        val uid = auth.currentUser?.uid ?: return
+        val line = _budgetLines.value.firstOrNull { it.id == lineId } ?: return
+        if (amount <= 0) return
+
+        val soloRef = firestore.collection("users")
+            .document(uid)
+            .collection("solo")
+            .document("data")
+
+        val batch = firestore.batch()
+
+        val newSavingAmount = if (direction == "verser") line.remainingAmount + amount else line.remainingAmount - amount
+        val newAccountBalance = if (direction == "verser") _soloAccountBalance.value - amount else _soloAccountBalance.value + amount
+
+        batch.update(soloRef.collection("lines").document(lineId), "remainingAmount", newSavingAmount.roundToCents())
+
+        batch.set(
+            soloRef.collection("account").document("balance"),
+            mapOf(
+                "balance" to newAccountBalance.roundToCents(),
+                "updatedAt" to Timestamp.now()
+            ),
+            com.google.firebase.firestore.SetOptions.merge()
+        )
+
+        val transaction = hashMapOf(
+            "lineId" to "account",
+            "lineTitle" to if (direction == "verser") "Épargne : ${line.title}" else "Retrait : ${line.title}",
+            "amount" to amount,
+            "type" to if (direction == "verser") "depense" else "ajout",
+            "authorName" to (userProfile.value?.name ?: ""),
+            "annotation" to "🏦",
+            "createdAt" to Timestamp.now()
+        )
+        batch.set(soloRef.collection("transactions").document(), transaction)
+
+        batch.commit()
+    }
     //----------------------------------------
     // Solo transaction
     //----------------------------------------
